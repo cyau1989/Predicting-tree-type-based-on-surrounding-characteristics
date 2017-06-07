@@ -1,0 +1,671 @@
+---
+Title: "DSC5103 STATISTICS"
+subtitle: 'Term Pr'
+Prepared_for: "Prof Tong Wang"
+date: "Nov 2016"
+---
+  
+```{r}
+# Section G2
+# Group 8
+# Members: LYU, PEIJIN, Man Kah Ho Sherman, Wang Yi, Yau Chung Yin
+```
+output:
+  html_document:
+  highlight: tango
+theme: yeti
+---
+  
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 100)  # set output width, turn off scientific notation for big numbers
+```
+
+```{r}
+# Section G2
+# Group 8
+# Members: Lyu PeiJin, Man Kah Ho Sherman, Wang Yi, Yau Chung Yin
+```
+### Introduction
+We will attempt to predict the forest tree cover type of Roosevelt National Forest in Colorado using K-Nearest Neighbor (KNN) algorithm, logistic regression (Part 1), regularization methods (Part 2) and tree-based methods (Part 3). Thereafter, we will combine these to create an ensemble model before comparing the performance of their respective results (Part 4).
+
+The data set was obtained from kaggle via "https://www.kaggle.com/uciml/forest-cover-type-dataset". It contains observation of 7 different tree types and their surrounding charateristics across four different wilderness areas within Roosevelt National Forest. Based on 30 meter x 30 meter sections, the elevation, slope and aspect of the trees were recorded to capture their positions along with their proximity to roads and wildfire ignition points. In addition, the data includes their respective hillshade and the soil type they grew on.
+
+[**Surrounding Characteristics**]
+- **Elevation**: Elevation in meters 
+- **Aspect**: Aspect in degrees azimuth 
+- **Slope**: Slope in degrees 
+- **Horizontal Distance To Roadways**:Horz Dist to nearest roadway 
+- **Hillshade 9am (0 to 255 index)**: Hillshade index at 9am, summer solstice 
+- **Hillshade Noon (0 to 255 index)**: Hillshade index at noon, summer solstice 
+- **Hillshade 3pm (0 to 255 index)**: Hillshade index at 3pm, summer solstice 
+- **Horizontal Distance To Fire Points**: Horz Dist to nearest wildfire ignition points 
+- **Wilderness Area (4 binary columns, 0 = absence or 1 = presence)**: Wilderness area designation 
+- **Soil Type (40 binary columns, 0 = absence or 1 = presence)**: Soil Type designation 
+
+[**Tree Types**]
+-
+**Cover_Type (7 types, integers 1 to 7)**: Forest Cover Type designation
+1 - Spruce/Fir 
+2 - Lodgepole Pine 
+3 - Ponderosa Pine 
+4 - Cottonwood/Willow 
+5 - Aspen 
+6 - Douglas-fir 
+7 - Krummholz
+
+The dependent variable forest tree cover type can take integer values 1 to 7 with each being a category. Hence, noting that this is a multinomial classification problem, we will be using the "multinomial" family for the different techniques.
+
+### Data Preparation
+The data file is downloaded to the working directory and loaded in R. We randomly sampled 10,000 rows from the original 581,012 observations to work with a more manageable sample size due to computing power constraints. Of the 10,000, we used 8,000 for training and the remaining 2,000 for test purposes.
+
+```{r}
+data<-read.csv("./data/covtype.csv")
+set.seed(123)
+limit.rows <- 10000
+df <- data[sample(nrow(data),limit.rows),]
+train.fraction <- 0.8 
+train.ind <- sample(nrow(df),round(train.fraction*nrow(df)))
+
+train <- df[train.ind,]
+test <- df[-train.ind,]
+```
+
+###Data Description###
+```{r}
+library(caret)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+df<-train
+df <- df %>%
+  gather(key=Region, value=region.indicator,Wilderness_Area1:Wilderness_Area4)%>%
+  filter(region.indicator==1) %>%
+  select(-region.indicator)
+df$Region <- ifelse(df$Region=="Wilderness_Area1","Rawah",
+                        ifelse(df$Region=="Wilderness_Area2","Neota",
+                        ifelse(df$Region=="Wilderness_Area3","Comanche Peak", 
+                               "Cache la Poudre")))
+df$Region <- as.factor(df$Region)
+df$Cover_Type <- as.character(df$Cover_Type)
+df$Cover_Type <- ifelse(df$Cover_Type==1,"Spruce/Fir",
+                        ifelse(df$Cover_Type==2,"Lodgepole Pine",
+                        ifelse(df$Cover_Type==3,"Ponderosa Pine",
+                        ifelse(df$Cover_Type==4,"Cottonwood/Willow ",
+                        ifelse(df$Cover_Type==5,"Aspen ",
+                        ifelse(df$Cover_Type==6,"Douglas-fir ",
+                                        "Krummholz"))))))
+df <- df %>%
+  gather(key=Soil, value=soil.indicator,Soil_Type1:Soil_Type40)%>%
+  filter(soil.indicator==1) %>%
+  select(-soil.indicator)
+df$Cover_Type <- as.factor(df$Cover_Type)
+
+ggplot(data=df) +
+  geom_bar(aes(x=Cover_Type,fill=Cover_Type),color="black") + 
+  facet_wrap(~Soil,scale="free") +
+  theme_bw() +
+  xlab("Count") + 
+  ylab("Tree Cover Type") + 
+  ggtitle("Coverage Type vs Soil Type")+
+  theme(axis.text=element_blank()) + 
+  theme(legend.position= "bottom")
+
+```
+
+#############################
+### Principal Component Analysis
+#############################
+```{r}
+#Remove Soil_Type17 as this column has no variation
+train2 <- train[, - 29]
+test2 <- test[, - 29]
+train2 <- train2[, - 21]
+test2 <- test2[, - 21]
+
+x.pca <- prcomp(x=train2 , scale=TRUE)
+summary(x.pca)
+
+# proportion of variance explained
+x.pca$sdev
+plot(x.pca$sdev^2 / sum(x.pca$sdev^2), type="b", ylim=c(0,1), xlab = "Variables", ylab ="Proportion of Variance Explained")
+
+# cumulative proportion of variance explained
+plot(cumsum(x.pca$sdev^2) / sum(x.pca$sdev^2), type="b", ylim=c(0,1),  xlab = "Variables", ylab ="Cumulative Proportion of Variance Explained")
+
+```
+
+#############################
+### Multinomial Logistic Regression
+#############################
+```{r}
+library("nnet")
+glm<-multinom(Cover_Type~.,data=train,maxit=100)
+glm.pred<-as.numeric(predict(glm,newdata=test))
+glm.prob<-predict(glm,newdata=test,type="probs")
+table(glm.pred,test$Cover_Type)
+r.glm <- sum(glm.pred==test$Cover_Type)/length(test$Cover_Type)
+r.glm
+
+```
+
+#############################
+### knn classification
+#############################
+#We obtained an optimal k = 5 after cross validation.
+```{r}
+
+
+library("FNN")
+ train.x <- as.matrix(train[,1:54])
+ train.y <- as.matrix(train[,55])
+ test.x <- as.matrix(test[,1:54])
+ test.y <- as.matrix(test[,55])
+ cl <- train.y 
+ 
+
+# ks <- c(1, 3, 5, 7, 9, 11, 15, 17, 23, 25, 35, 45, 55, 75, 99)
+# misclass.train <- numeric(length=length(ks))
+# misclass.test  <- numeric(length=length(ks))
+# misclass.cv  <- numeric(length=length(ks))
+# 
+# for (i in seq(along=ks)) {
+#     mod.train <- knn(train.x, train.x, cl, k=ks[i])
+#     mod.test  <- knn(train.x, test.x, cl, k=ks[i])
+#     mod.cv <- knn.cv(train.x, train.y, k=ks[i])
+#     misclass.train[i] <- sum(mod.train != train.y) / length(train.y)
+#     misclass.test[i] <- sum(mod.test != test.y) / length(test.y)
+#     misclass.cv[i] <- sum(mod.cv != train.y) / length(train.y)
+# }
+# misclass <- data.frame(k=ks, train=misclass.train, test=misclass.test, cv=misclass.cv)
+# misclass
+
+
+knn.predict <- knn(train=train.x, test=test.x, cl, k=5)
+knn.p <- knn(train=train.x, test=test.x, cl, k=5, prob=TRUE)
+d <- attributes(.Last.value)
+knn.prob <- d$prob
+
+table(knn.predict,test$Cover_Type)
+r.knn <- sum(test$Cover_Type==knn.predict)/length(test$Cover_Type)
+r.knn
+
+```
+
+## Part 2: Predicting tree cover type using regularization methods.
+#############################
+### Ridge
+#############################
+#We obtain an optimal lambda of 0.02703 after running "cv.glmnet(x, y, alpha=0, family="multinomial", type.measure="class")" and extracting ridge.cv$lambda.1se
+```{r}
+x <- model.matrix(Cover_Type ~ ., train)[, -1]
+y <-  as.factor(train$Cover_Type)
+x.test <- model.matrix(Cover_Type ~ ., test)[, -1]
+y.test <- as.factor(test$Cover_Type)
+
+library("caret")
+library("glmnet")
+
+set.seed(123)
+ridge.lam <- 0.02703  # or ridge.cv$lambda.min
+
+ridge.mod <- glmnet(x, y, alpha=0, family="multinomial")
+plot(ridge.mod, xvar="lambda", label = TRUE)
+abline(v=log(ridge.lam), lty=2)
+
+ridge.prob <- predict(ridge.mod, newx=x.test, s=ridge.lam, type="response")
+ridge.pred <- predict(ridge.mod, newx=x.test, s=ridge.lam,type="class")
+confusionMatrix(ridge.pred,y.test)
+```
+
+#############################
+### Lasso
+#############################
+#We obtain an optimal lambda of 0.00162 after running "cv.glmnet(x, y, alpha=1, family="multinomial", type.measure="class")" and extracting "lasso.cv$lambda.1se"
+```{r}
+set.seed(123)
+lasso.lam <-  0.00162
+
+
+lasso.mod <- glmnet(x, y, alpha=1, family="multinomial")
+plot(lasso.mod, xvar="lambda", label = TRUE)
+abline(v=log(lasso.lam), lty=2)
+
+lasso.prob <- predict(lasso.mod, newx=x.test, s=lasso.lam, type="response", exact=TRUE)
+lasso.pred <- predict(lasso.mod, newx=x.test, s=lasso.lam, type="class", exact=TRUE)
+confusionMatrix(lasso.pred,y.test)
+```
+
+#############################
+### Elastic Net
+#############################
+#We obtain an optimal lambda of 0.00345 and optimal alpha of 0.9 after running 10-fold cross validation with 0.1 increments of alpha and extracting "en.cv.error[which.min(en.cv.error$error), "lambda"]" &  "en.cv.error[which.min(en.cv.error$error), "alpha"]"
+```{r}
+#set.seed(123)
+#K <- 10
+#n <- nrow(x)
+#fold <- rep(0, n)
+#shuffled.index <- sample(n, n, replace=FALSE)
+#fold[shuffled.index] <- rep(1:K, length.out=n)
+#table(fold)
+
+#set.seed(123)
+#en.cv.error <- data.frame(alpha=alphas)
+#for (i in 1:length(alphas)){
+#   en.cv <- cv.glmnet(x, y, alpha=alphas[i], foldid=fold, family="multinomial", type.measure="class")
+#    en.cv.error[i, "lambda"] <- en.cv$lambda.1se
+#   en.cv.error[i, "error"] <- min(en.cv$cvm) + en.cv$cvsd[which.min(en.cv$cvm)]}
+
+set.seed(123)
+en.lam <- 0.00345
+en.alpha <- 0.9 
+
+en.mod <- glmnet(x, y, alpha=en.alpha, family="multinomial")
+plot(en.mod, xvar="lambda", label = TRUE)
+abline(v=log(en.lam), lty=2)
+
+en.pred <- predict(en.mod, newx=x.test, s=en.lam, type="class", exact=TRUE)
+en.prob <- predict(en.mod, newx=x.test, s=en.lam, type="response", exact=TRUE)
+confusionMatrix(en.pred,y.test)
+```
+
+
+## Part 2: Predicting tree cover type using tree-based methods.
+#############################
+### Tree
+#############################
+```{r}
+library("tree")
+tree <- tree(as.factor(Cover_Type) ~ ., data=train)
+
+# pruning by cross-validation
+set.seed(123)
+tree.cv <- cv.tree(tree)
+
+# optimal tree size obtained by CV
+optimal <- which.min(tree.cv$dev)
+optimal.size <- tree.cv$size[optimal]
+
+# pruned tree
+tree.pruned <- prune.tree(tree, best=optimal.size)
+plot(tree.pruned)
+text(tree.pruned)
+
+
+tree.pred<-predict(tree.pruned, newdata=test,type="class")
+tree.pred
+tree.prob<-predict(tree.pruned, newdata=test,type="vector")
+tree.prob
+table(tree.pred,test$Cover_Type)
+r.tree <- sum(tree.pred==test$Cover_Type)/length(test$Cover_Type)
+r.tree
+
+```
+
+#############################
+### Bagging
+#############################
+```{r}
+library("randomForest")
+library(ggplot2)
+library(caret)
+
+train2 <- train[, - 29]
+test2 <- test[, - 29]
+
+ytest=as.factor(test2[ , 54])
+
+covtype.bag <- randomForest(as.factor(train2$Cover_Type) ~ ., data=train2, xtest=test2[ , -54], ytest=ytest, mtry=53, keep.forest=TRUE)
+
+
+# prediction
+bag.prob <- covtype.bag$test$votes
+bag.pred <- covtype.bag$test$predicted
+
+
+confusionMatrix(bag.pred,test$Cover_Type)
+
+```
+
+#############################
+### Random Forest
+#############################
+#We obtain an optimal mtry of 16  after tuning random forest (mtry) manually using mtry = 500"
+```{r}
+
+model <- randomForest(factor(Cover_Type) ~ .,
+                      data = train,
+                      ntree=500,
+                      mtry = 16,
+                      importance=TRUE)
+
+RF.prob <- predict(model,test, type = "prob")
+RF.predictions <- predict(model,test, type = "class")
+
+confusionMatrix(RF.predictions,test$Cover_Type)
+# 
+# #Variable Importance Plot
+# importance(model)  # by default, we only have IncNodePurity
+# varImpPlot(model)
+# 
+# # Partial  Plot on Elevation
+# partialPlot(model, train, x.var="Elevation")
+
+
+```
+
+#############################
+### GBM
+#############################
+```{r}
+library("gbm")
+
+covtype.gbm <- gbm(factor(Cover_Type) ~ . -Soil_Type15, data=train, distribution="multinomial", n.trees=2000, keep.data = TRUE, shrinkage=0.001, interaction.depth=4)
+covtype.gbm
+
+
+gbm.prob <- predict(covtype.gbm, newdata=test, n.trees=2000, type="response")
+gbm.prob
+
+gbm.pred <- colnames(gbm.prob)[apply(gbm.prob, 1, which.max)]
+gbm.pred <- matrix(gbm.pred)
+
+confusionMatrix(factor(gbm.pred), test$Cover_Type)
+
+# # variable importance
+# summary(covtype.gbm)
+# 
+# # partial plot in gbm - Elevation
+# # How to distinguish which color belongs to which type?
+# plot(covtype.gbm, i=1, type="response")
+
+
+
+```
+
+## Part 4: Ensemble Method and Comparison of results
+#############################
+
+
+
+
+
+#############################
+### Compare models
+#############################
+```{r}
+library("ROCR")
+
+##### knn #########
+knn.binary<-as.numeric(test$Cover_Type==knn.predict)
+prediction.knn <- prediction(knn.prob, knn.binary) 
+roc.knn<- performance(prediction.knn, measure = "tpr", x.measure = "fpr")
+plot(roc.knn)
+auc.knn<-as.numeric(performance(prediction.knn, "auc")@y.values)
+auc.knn
+
+
+##### ridge #########
+ridge.probDf<-data.frame(ridge.prob)
+prob.ridge<-as.numeric()
+for (i in 1:2000){
+  prob.ridge[i]<-ridge.probDf[i,as.numeric(ridge.pred[i])]
+}
+ridge.binary<-as.numeric(test$Cover_Type==ridge.pred)
+prediction.ridge <- prediction(prob.ridge, ridge.binary)
+roc.ridge<- performance(prediction.ridge, measure = "tpr", x.measure = "fpr")
+plot(roc.ridge)
+auc.ridge<-as.numeric(performance(prediction.ridge, "auc")@y.values)
+auc.ridge
+
+##### lasso #########
+lasso.probDf <- data.frame(lasso.prob)
+prob.lasso<-as.numeric()
+for (i in 1:2000){
+  prob.lasso[i]<-lasso.probDf[i,as.numeric(lasso.pred[i])]
+}
+lasso.binary<-as.numeric(test$Cover_Type==lasso.pred)
+prediction.lasso <- prediction(prob.lasso, lasso.binary)
+roc.lasso<- performance(prediction.lasso, measure = "tpr", x.measure = "fpr")
+plot(roc.lasso)
+auc.lasso<-as.numeric(performance(prediction.lasso, "auc")@y.values)
+auc.lasso
+
+##### en #########
+en.probDf <- data.frame(en.prob)
+prob.en<-as.numeric()
+for (i in 1:2000){
+  prob.en[i]<- en.probDf[i,as.numeric(en.pred[i])]
+}
+en.binary<-as.numeric(test$Cover_Type==en.pred)
+prediction.en <- prediction(prob.en, en.binary)
+roc.en<- performance(prediction.en, measure = "tpr", x.measure = "fpr")
+plot(roc.en)
+auc.en<-as.numeric(performance(prediction.en, "auc")@y.values)
+auc.en
+
+
+##### tree #########
+prob.tree<-as.numeric()
+for (i in 1:2000){
+  prob.tree[i]<-tree.prob[i,tree.pred[i]]
+}
+tree.binary<-as.numeric(test$Cover_Type==tree.pred)
+prediction.tree <- prediction(prob.tree, tree.binary)
+roc.tree<- performance(prediction.tree, measure = "tpr", x.measure = "fpr")
+plot(roc.tree)
+auc.tree<-as.numeric(performance(prediction.tree, "auc")@y.values)
+auc.tree
+
+############## multinomial logistic regression ########
+prob.glm<-as.numeric()
+for (i in 1:2000){
+  prob.glm[i]<-glm.prob[i,glm.pred[i]]
+}
+glm.binary<-as.numeric(test$Cover_Type==glm.pred)
+prediction.glm <- prediction(prob.glm, glm.binary)
+roc.glm<- performance(prediction.glm, measure = "tpr", x.measure = "fpr")
+plot(roc.glm)
+auc.glm<-as.numeric(performance(prediction.glm, "auc")@y.values)
+auc.glm
+
+##### Bagging #########
+prob.bag<-as.numeric()
+for (i in 1:2000){
+  prob.bag[i]<-bag.prob[i,bag.pred[i]]
+}
+bag.binary<-as.numeric(test$Cover_Type==bag.pred)
+prediction.bag <- prediction(prob.bag, bag.binary)
+roc.bag<- performance(prediction.bag, measure = "tpr", x.measure = "fpr")
+plot(roc.bag)
+auc.bag<-as.numeric(performance(prediction.bag, "auc")@y.values)
+auc.bag
+
+
+##### Random Forest #########
+prob.rf<-as.numeric()
+for (i in 1:2000){
+  prob.rf[i]<-RF.prob[i,RF.predictions[i]]
+}
+rf.binary<-as.numeric(test$Cover_Type==RF.predictions)
+prediction.rf<- prediction(prob.rf, rf.binary)
+roc.rf<- performance(prediction.rf, measure = "tpr", x.measure = "fpr")
+plot(roc.rf)
+auc.rf<-as.numeric(performance(prediction.rf, "auc")@y.values)
+auc.rf
+
+
+##### GBM #########
+prob.gbm<-apply(gbm.prob, 1, max)
+gbm.binary<-as.numeric(test$Cover_Type==gbm.pred)
+prediction.gbm<- prediction(apply(gbm.prob, 1, max), gbm.binary)
+roc.gbm<- performance(prediction.gbm, measure = "tpr", x.measure = "fpr")
+plot(roc.gbm)
+auc.gbm<-as.numeric(performance(prediction.gbm, "auc")@y.values)
+auc.gbm
+
+
+
+```
+
+#############################
+### Ensemble Method
+#############################
+```{r}
+
+q<-1
+misclass<-0
+col1<-0
+col2<-0
+col3<-0
+col4<-0
+col5<-0
+col6<-0
+col7<-0
+
+tree.prob1<-data.frame(tree.prob)
+bag.prob1<-data.frame(bag.prob)
+RF.prob1<-data.frame(RF.prob)
+gbm.prob1<-data.frame(gbm.prob)
+
+
+for (i1 in seq(0,1,0.1)){
+  for(i2 in seq(0,1,0.1)){
+    for(i3 in seq(0,1,0.1)){
+      for(i4 in seq(0,1,0.1)){
+        for(i5 in seq(0,1,0.1)){
+          for(i6 in seq(0,1,0.1)){
+            for(i7 in seq(0,1,0.1)){
+              if(i1+i2+i3+i4+i5+i6+i7==1){
+                yhat<- i1*ridge.probDf+i2*lasso.probDf+i3*en.probDf+i4*tree.prob1+i5*bag.prob1+i6*RF.prob1+i7*gbm.prob1
+                pred.ensemble <- apply(yhat, 1, which.max)
+              misclass[q]<-sum(pred.ensemble==test$Cover_Type)/length(test$Cover_Type)
+                col1[q]<-i1
+                col2[q]<-i2
+                col3[q]<-i3
+                col4[q]<-i4
+                col5[q]<-i5
+                col6[q]<-i6
+                col7[q]<-i7
+                q<-q+1
+              }
+            }}}}}}}
+record<-cbind(misclass,col1,col2,col3,col4,col5,col6,col7)
+record[which.max(misclass),]
+sum(gbm.pred==test$Cover_Type)/length(test$Cover_Type)
+
+
+#####Ensemble########
+
+prob.ens<-0.7*bag.prob1+0.3*RF.prob1
+pred.ens <- apply(yhat, 1, which.max)       
+ens.binary<-as.numeric(test$Cover_Type==pred.ens)
+prob.ens1<-as.numeric()
+for (i in 1:2000){
+  prob.ens1[i]<-prob.ens[i,pred.ens[i]]
+}
+prediction.ens<- prediction(prob.ens1, ens.binary)
+
+auc.ens<-as.numeric(performance(prediction.ens, "auc")@y.values)
+auc.ens
+
+roc.ens<- performance(prediction.ens, measure = "tpr", x.measure = "fpr")
+plot(roc.ens)
+
+table(pred.ens,test$Cover_Type)
+
+
+
+```
+#############################
+### AUC&ROC 
+#############################
+
+```{r}
+
+
+####AUC####
+auc.knn
+auc.ridge
+auc.lasso
+auc.en
+auc.tree
+auc.glm
+auc.bag
+auc.rf
+auc.gbm
+auc.ens
+###ROC Plot###
+#plot(roc.knn, col="yellow")
+abline(a=0, b=1, lty=2) # diagonal line
+plot(roc.ridge, add=TRUE, col="purple")
+plot(roc.lasso, add=TRUE, col="green")
+plot(roc.en, add=TRUE, col="blue", lwd=2)
+plot(roc.tree, add=TRUE, col="red", lwd=2)
+plot(roc.glm, add=TRUE, col="grey", lwd=2)
+plot(roc.bag, add=TRUE, col="brown", lwd=2)
+plot(roc.rf, add=TRUE, col="pink", lwd=2)
+plot(roc.gbm, add=TRUE, col="orange", lwd=2)
+plot(roc.ens, add=TRUE, col="black",lwd=2)
+plot(roc.knn, add=TRUE, col="yellow",lwd=2)
+
+legend(x = 0.8, y=0.5,  legend=c("knn","ridge","lasso","en","tree","glm","bag","rf","gbm","ensemble"), lty = c(1,1,1,1,1,1,1,1,1),lwd = c(2,2,2,2,2,2,2,2,2), col = c("yellow","purple","green","blue","red","grey","brown","pink","orange","black"))
+
+```
+
+#############################
+### Important Variables Plot
+#############################
+```{r}
+ggplot(data=df) +
+  geom_point(aes(x=Horizontal_Distance_To_Roadways,
+                 y=Elevation,
+                 color=Cover_Type
+                ),alpha=0.5) + 
+  theme_bw() + 
+  ylab("Elevation") +
+  xlab("Horizontal_Distance_To_Roadways") +
+  guides(color = guide_legend(title = "Cover Type")) + 
+  theme(legend.position= "bottom") + 
+  scale_color_manual(values=c("blue", "black","yellow","coral","sky blue","purple","forest green")) + theme_bw()
+```
+
+#############################
+###   Key Result - Model
+#############################
+
+```{r}
+
+# 1. We used 9 different models to predict the type, and the accuracies are between 67.0% - 80.4%, which are much better than pure guess (1/7, pred.ens). We evluated these models using accuracy rate,AUC and ROC. It seems Bagging and random forest are the best models for this problem, followed by knn.
+
+# 2. After building up these models, we build an ensemble model, and use loop to find the best weight. The result shows that ensemble model(0.7 bagging + 0.3 random forest) has the best performance, as evaluated by accuracy rate / AUC / ROC
+
+# 3. The result of tree model, variable importance plot in RF model and GBM model shows that the The elavation is the most important feature, followed by Horizontal_Distance_to_Roadways and Horizontal_Distance_to_Fire_Point. So we did further analysis on these features, and found out their impact on types. We used plot chart to show the result.
+
+# 4.Type 3,4,6 is more sensitive to the environment.Because they are deeply affected by distance to roads and elevation. we can see a obvious contour about them.
+
+# 5.We applied one unsupervised method PCA in our analysis, and the result shows important variables are roughly the same with the variable importance plot in RF model and GBM. 
+
+
+```
+
+
+#############################
+### Conclusion and Application
+#############################
+
+```{r}
+
+##
+# 1. Environmental Conversation: The Protection Policy plans to conserve specific species of trees. Based on our key findings of our model, they can make specific and separate policy according to various slope,elevation,aspect and so on.
+
+
+# 2.Establishment of new parks : Species of trees to import and the environment necessary to grow them (e.g. Gardens by the Bay),so the objective is to optimize planting location of different tree species.
+
+
+# 3.Analyze forest migration patterns:Studies have shown that tree seedlings are growing at higher altitude relative to their adults. And scientist attribute this to climate change issues causing tree species to grow at higher elevation to stay within ideal temperature zones
+
+
+```
+
+
